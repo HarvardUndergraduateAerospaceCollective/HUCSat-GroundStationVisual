@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up the HUCSat mission DB every 3 hours
+
+[Timer]
+OnCalendar=*-*-* 00/3:00:00
+# Run a missed backup at boot if the Pi was off at the scheduled time.
+Persistent=true
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

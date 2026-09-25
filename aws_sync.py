@@ -23,6 +23,7 @@ AWS_SYNC_URL      Base URL of the AWS API endpoint (required).
                   e.g. https://xxx.execute-api.us-east-1.amazonaws.com/prod
 AWS_SYNC_API_KEY  API key sent as x-api-key header (optional but recommended).
 AWS_SYNC_INTERVAL Poll interval in seconds (default: 60).
+AWS_SYNC_SETTLE_S Only take packets at least this old, in seconds (default: 60).
 
 Usage
 -----
@@ -39,20 +40,37 @@ State
 -----
 Last-synced cursor is stored in .aws_sync_state.json (next to this script).
 The file survives reboots so the sync never re-fetches the full history.
+The cursor only moves past packets that were actually stored (or were
+duplicates).  A packet that fails to store holds the cursor so the next poll
+retries it; after _MAX_ATTEMPTS failures it is written verbatim to
+aws_sync_quarantine.jsonl and skipped, so one bad packet can't stall the feed
+and nothing is silently lost.  Errors from the local DB itself (locked, full,
+read-only, I/O) are never blamed on a packet: the cursor just holds until the
+DB recovers.  Packets younger than AWS_SYNC_SETTLE_S are left for the next
+poll, so an ingest write that lands out of order in a burst can't be skipped.
+To re-sync from scratch: stop the service, set last_synced to
+1970-01-01T00:00:00Z, start it (frame_hash dedup makes this safe).
 
-NOTE: gs_time is preserved in decoded_json (the full TinyGS payload) but
-is not stored as a separate column.
+Timestamps
+----------
+Packets are stored with the AWS arrival time (received_at), except when
+TinyGS delivered them late (e.g. a webhook replay after an outage): if
+received_at is more than _REPLAY_THRESHOLD_S after the TinyGS reception time
+(gs_time), the original reception time is stored instead so backfilled
+packets plot where they belong.  The AWS received_at is kept in decoded_json.
 """
 
 import base64
 import json
 import logging
 import os
+import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import beacon_decoder
@@ -67,11 +85,25 @@ log = logging.getLogger("aws_sync")
 AWS_SYNC_URL      = os.environ.get("AWS_SYNC_URL", "")
 AWS_SYNC_API_KEY  = os.environ.get("AWS_SYNC_API_KEY", "")
 AWS_SYNC_INTERVAL = int(os.environ.get("AWS_SYNC_INTERVAL", "60"))
+# Overlapping ingest Lambdas can commit out of received_at order, and the sync
+# query is eventually consistent; waiting this long before taking a packet
+# means everything older than it has landed (ingest Lambda timeout is 10 s).
+AWS_SYNC_SETTLE_S = int(os.environ.get("AWS_SYNC_SETTLE_S", "60"))
 
 _STATE_FILE = Path(__file__).parent / ".aws_sync_state.json"
+_QUARANTINE_FILE = Path(__file__).parent / "aws_sync_quarantine.jsonl"
 _EPOCH      = "1970-01-01T00:00:00Z"
 _TIMEOUT    = 15   # seconds for HTTP requests
 _PAGE_LIMIT = 200  # packets per poll
+
+_MAX_ATTEMPTS = 5            # store failures before a packet is quarantined
+_REPLAY_THRESHOLD_S = 600    # arrival this long after reception = late delivery
+# gs_time earlier than this can't be a real HUCSat reception (pre-launch, or
+# the beacon RTC's year-2000 epoch) — ignore it and keep the AWS time.
+_MIN_PLAUSIBLE_GS_TIME = 1735689600   # 2025-01-01T00:00:00Z
+
+_failures: dict[str, int] = {}   # received_at -> consecutive store failures
+_mem_cursor = _EPOCH             # survives a state file that can't be written
 
 
 # ──────────────────────────────────────────────
@@ -88,13 +120,21 @@ def _load_last_synced() -> str:
 
 
 def _save_last_synced(ts: str) -> None:
-    """Persist the ISO-8601 cursor to state file."""
+    """Persist the ISO-8601 cursor to state file (atomically).
+
+    The cursor is also kept in memory, so an unwritable state file can't make
+    every poll re-fetch the same stale page forever.
+    """
+    global _mem_cursor
+    if ts > _mem_cursor:
+        _mem_cursor = ts
+    tmp = _STATE_FILE.with_name(_STATE_FILE.name + ".tmp")
     try:
-        _STATE_FILE.write_text(
-            json.dumps({"last_synced": ts}), encoding="utf-8"
-        )
+        tmp.write_text(json.dumps({"last_synced": ts}), encoding="utf-8")
+        os.replace(tmp, _STATE_FILE)
     except OSError as exc:
-        log.warning("Could not save sync state: %s", exc)
+        log.error("aws_sync: could not save sync state to %s: %s "
+                  "(continuing with in-memory cursor)", _STATE_FILE, exc)
 
 
 # ──────────────────────────────────────────────
@@ -107,7 +147,9 @@ def _fetch_packets(since: str) -> dict:
     Raises URLError / ValueError on network or parse failures — callers
     should catch and log rather than crash.
     """
-    url = f"{AWS_SYNC_URL}/packets?since={since}&limit={_PAGE_LIMIT}"
+    # Encode the cursor: a literal '+' in '+00:00' arrives as a space at API
+    # Gateway, which made every poll re-fetch the last packet.
+    url = f"{AWS_SYNC_URL}/packets?since={quote(since, safe='')}&limit={_PAGE_LIMIT}"
     headers = {"Accept": "application/json"}
     if AWS_SYNC_API_KEY:
         headers["x-api-key"] = AWS_SYNC_API_KEY
@@ -123,6 +165,47 @@ def _fetch_packets(since: str) -> dict:
 # Packet processing
 # ──────────────────────────────────────────────
 
+def _reception_time(pkt: dict) -> str:
+    """Timestamp to store for *pkt*: the AWS arrival time, or the original
+    TinyGS reception time (gs_time) if the packet was delivered late."""
+    aws_ts = pkt.get("received_at") or datetime.now(timezone.utc).isoformat()
+    try:
+        gs_s = float(pkt.get("gs_time") or pkt.get("unix_GS_time"))
+        aws_dt = datetime.fromisoformat(aws_ts.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return aws_ts
+    if gs_s > 100_000_000_000:          # milliseconds
+        gs_s /= 1000
+    if aws_dt.tzinfo is None:
+        aws_dt = aws_dt.replace(tzinfo=timezone.utc)
+    lag = aws_dt.timestamp() - gs_s
+    if gs_s < _MIN_PLAUSIBLE_GS_TIME or lag <= _REPLAY_THRESHOLD_S:
+        return aws_ts
+    original = datetime.fromtimestamp(gs_s, tz=timezone.utc).isoformat(timespec="microseconds")
+    log.info("aws_sync: late delivery (%.0f s after TinyGS reception) — storing original time %s",
+             lag, original)
+    return original
+
+
+def _quarantine(pkt: dict, error: str) -> bool:
+    """Append a packet that keeps failing to the quarantine file.
+
+    Returns True only if it was written, so the caller never skips a packet
+    that exists nowhere else on the Pi.
+    """
+    record = {"quarantined_at": datetime.now(timezone.utc).isoformat(),
+              "error": error, "packet": pkt}
+    try:
+        with open(_QUARANTINE_FILE, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, default=str) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        return True
+    except OSError:
+        log.exception("aws_sync: could not write quarantine file %s", _QUARANTINE_FILE)
+        return False
+
+
 def _process_and_store(pkt: dict) -> bool:
     """Decode one AWS packet dict, store in local DB.
 
@@ -137,7 +220,7 @@ def _process_and_store(pkt: dict) -> bool:
     snr        = pkt.get("snr")
     crc_error  = bool(pkt.get("crc_error", False))
     gs_time    = pkt.get("gs_time") or pkt.get("unix_GS_time")
-    received_at = pkt.get("received_at") or datetime.now(timezone.utc).isoformat()
+    received_at = _reception_time(pkt)
 
     # ── Decode raw satellite bytes ───────────────────────────────
     raw_b64 = pkt.get("raw_data", "") or pkt.get("data", "")
@@ -164,7 +247,15 @@ def _process_and_store(pkt: dict) -> bool:
         decoded_combined.update(beacon_telemetry)   # top-level for consumers
         decoded_combined["_beacon"] = beacon_telemetry  # preserved copy
 
-    # ── Insert into local DB (dedup by frame_hash) ────────────────
+    readings: list[tuple[str, float, str]] = []
+    if rssi is not None:
+        readings.append(("rssi", float(rssi), "dBm"))
+    if snr is not None:
+        readings.append(("snr", float(snr), "dB"))
+    if beacon_telemetry:
+        readings.extend(beacon_decoder.extract_telemetry_readings(beacon_telemetry))
+
+    # ── Insert packet + telemetry in one transaction (dedup by frame_hash) ──
     pkt_id, was_new = packet_store.store_packet_if_new(
         satellite=str(satellite),
         norad_id=int(norad_id) if norad_id is not None else None,
@@ -177,23 +268,12 @@ def _process_and_store(pkt: dict) -> bool:
         decoded=decoded_combined,
         source="aws_sync",
         received_at=received_at,
+        telemetry=readings,
     )
 
     if not was_new:
         log.debug("aws_sync: duplicate skipped  station=%s  gs_time=%s", station, gs_time)
         return False
-
-    # ── Store telemetry time-series ──────────────────────────────
-    readings: list[tuple[str, float, str]] = []
-    if rssi is not None:
-        readings.append(("rssi", float(rssi), "dBm"))
-    if snr is not None:
-        readings.append(("snr", float(snr), "dB"))
-    if beacon_telemetry:
-        readings.extend(beacon_decoder.extract_telemetry_readings(beacon_telemetry))
-
-    if readings:
-        packet_store.store_telemetry_batch(pkt_id, readings, timestamp=received_at)
 
     log.info(
         "aws_sync: stored packet #%d  sat=%s  station=%s  rssi=%s  snr=%s  beacon_fields=%d",
@@ -206,12 +286,28 @@ def _process_and_store(pkt: dict) -> bool:
 # Sync loop
 # ──────────────────────────────────────────────
 
+def _is_db_error(exc: Exception) -> bool:
+    """True for failures of the local DB/disk rather than of one packet."""
+    return (isinstance(exc, (sqlite3.OperationalError, OSError))
+            or type(exc) is sqlite3.DatabaseError)      # e.g. "malformed"
+
+
+def _is_settled(pkt_ts: str, cutoff: datetime) -> bool:
+    try:
+        dt = datetime.fromisoformat(pkt_ts.replace("Z", "+00:00"))
+    except ValueError:
+        return True            # can't tell; never let it block the feed
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt <= cutoff
+
+
 def _sync_once() -> int:
     """Fetch one batch from AWS, store all packets, advance cursor.
 
     Returns the number of newly inserted packets.
     """
-    since = _load_last_synced()
+    since = max(_load_last_synced(), _mem_cursor)
     log.debug("aws_sync: fetching packets since %s", since)
 
     response = _fetch_packets(since)
@@ -223,18 +319,38 @@ def _sync_once() -> int:
 
     inserted = 0
     latest_ts = since
+    held = False
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=AWS_SYNC_SETTLE_S)
 
-    for pkt in packets:
-        try:
-            was_new = _process_and_store(pkt)
-            if was_new:
-                inserted += 1
-        except Exception:
-            log.exception("aws_sync: error processing packet: %s", pkt)
-
-        # Advance cursor to the latest timestamp seen, regardless of insert result.
-        # This prevents re-fetching duplicates on every poll.
+    # The cursor is a high-water mark, so process strictly in time order.
+    for pkt in sorted(packets, key=lambda p: p.get("received_at") or ""):
         pkt_ts = pkt.get("received_at") or ""
+        if pkt_ts and not _is_settled(pkt_ts, cutoff):
+            break              # too fresh: take it (and anything after) next poll
+        try:
+            if _process_and_store(pkt):
+                inserted += 1
+            _failures.pop(pkt_ts, None)
+        except Exception as exc:
+            if _is_db_error(exc):
+                log.error("aws_sync: local DB error storing packet received_at=%s: %s "
+                          "— holding cursor until the DB recovers", pkt_ts, exc)
+                held = True
+                break
+            attempts = _failures.get(pkt_ts, 0) + 1
+            _failures[pkt_ts] = attempts
+            log.exception("aws_sync: failed to store packet received_at=%s (attempt %d/%d)",
+                          pkt_ts, attempts, _MAX_ATTEMPTS)
+            if attempts < _MAX_ATTEMPTS or not _quarantine(pkt, repr(exc)):
+                # Hold the cursor just before this packet so the next poll
+                # retries it. Everything stored so far in this batch is safe.
+                held = True
+                break
+            _failures.pop(pkt_ts, None)
+            log.error("aws_sync: packet received_at=%s failed %d times — saved to %s and skipped",
+                      pkt_ts, attempts, _QUARANTINE_FILE.name)
+
+        # Only reached for packets that were stored, deduped, or quarantined.
         if pkt_ts and pkt_ts > latest_ts:
             latest_ts = pkt_ts
 
@@ -242,7 +358,8 @@ def _sync_once() -> int:
         _save_last_synced(latest_ts)
         log.debug("aws_sync: cursor advanced to %s", latest_ts)
 
-    log.info("aws_sync: sync complete — %d new / %d total", inserted, len(packets))
+    log.info("aws_sync: sync complete — %d new / %d total%s", inserted, len(packets),
+             " (holding cursor for retry)" if held else "")
     return inserted
 
 

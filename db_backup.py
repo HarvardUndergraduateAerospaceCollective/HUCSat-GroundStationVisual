@@ -344,7 +344,8 @@ def check_status():
 # ── Main ───────────────────────────────────────
 
 def run_backup(*, do_local: bool = True, do_cloud: bool = True,
-               dry_run: bool = False, do_sync: bool = True):
+               dry_run: bool = False, do_sync: bool = True) -> bool:
+    """Run one backup. Returns False if it failed or any destination failed."""
     log = setup_logging()
     log.info("=" * 50)
     log.info("Backup run started")
@@ -353,7 +354,7 @@ def run_backup(*, do_local: bool = True, do_cloud: bool = True,
         msg = f"Database not found: {DB_PATH}"
         log.error(msg)
         notify_slack(msg, "error")
-        return
+        return False
 
     # Pre-backup AWS sync: pull any packets the Pi missed
     if do_sync and os.environ.get("CUBESAT_AWS_URL"):
@@ -374,29 +375,29 @@ def run_backup(*, do_local: bool = True, do_cloud: bool = True,
                      "SD card" if do_local else None,
                      "Google Drive" if do_cloud else None,
                  ])))
-        return
+        return True
 
     if not acquire_lock():
         log.warning("Another backup is already running — exiting")
-        return
+        return True
     try:
-        _run_backup_locked(log, do_local, do_cloud)
+        return _run_backup_locked(log, do_local, do_cloud)
     finally:
         release_lock()
 
 
-def _run_backup_locked(log: logging.Logger, do_local: bool, do_cloud: bool):
+def _run_backup_locked(log: logging.Logger, do_local: bool, do_cloud: bool) -> bool:
     STAGING_DIR.mkdir(exist_ok=True)
     staging_path = STAGING_DIR / backup_filename()
 
     if not safe_backup(DB_PATH, staging_path):
         notify_slack("sqlite3.backup() failed — no backup created", "error")
-        return
+        return False
 
     if not verify_backup(staging_path):
         staging_path.unlink(missing_ok=True)
         notify_slack("Backup integrity check failed — discarded", "error")
-        return
+        return False
 
     results = {}
 
@@ -415,6 +416,7 @@ def _run_backup_locked(log: logging.Logger, do_local: bool, do_cloud: bool):
     failures = [k for k, v in results.items() if not v]
     if failures:
         notify_slack(summary, "warning")
+    return not failures
 
 
 def run_forever(interval: int, *, do_local: bool = True, do_cloud: bool = True,
@@ -492,8 +494,10 @@ def main():
         run_forever(args.interval, do_local=do_local, do_cloud=do_cloud,
                     do_sync=not args.no_sync)
     else:
-        run_backup(do_local=do_local, do_cloud=do_cloud, dry_run=False,
-                   do_sync=not args.no_sync)
+        # Non-zero exit so a failed timer run shows as failed in systemd.
+        if not run_backup(do_local=do_local, do_cloud=do_cloud, dry_run=False,
+                          do_sync=not args.no_sync):
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

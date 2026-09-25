@@ -907,6 +907,9 @@ def main():
                              "your OWN TinyGS ground station; not needed for network-wide capture)")
     parser.add_argument("--poll-interval", type=int, default=300,
                         help="Seconds between TinyGS v3 API polls when --live (default 300)")
+    parser.add_argument("--no-tinygs-poller", action="store_true",
+                        help="With --live, don't poll the TinyGS API; packets come only "
+                             "from the TinyGS webhook via AWS (aws_sync.py)")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--n-orbits", type=float, default=3.0,
                         help="Default number of orbits to display")
@@ -948,13 +951,17 @@ def main():
     log.info("TLE auto-refresh every %.0f min", _TLE_REFRESH_INTERVAL / 60)
 
     if args.live:
-        # Network-wide capture: poll the TinyGS v3 API (headless, signed request).
-        # This replaces the MQTT listener, which only ever delivers packets from
-        # your OWN ground stations (we run none) — see tinygs_poller.py.
-        import tinygs_poller
-        tinygs_poller.start_poller(interval=args.poll_interval)
+        # Push new DB packets (from aws_sync and/or the poller) to the browser.
         socketio.start_background_task(_check_new_packets)
-        log.info("Live capture: TinyGS v3 poller started (every %ds)", args.poll_interval)
+        if args.no_tinygs_poller:
+            log.info("Live capture: TinyGS API poller disabled; packets arrive via aws_sync")
+        else:
+            # Network-wide capture: poll the TinyGS v3 API (headless, signed request).
+            # This replaces the MQTT listener, which only ever delivers packets from
+            # your OWN ground stations (we run none) — see tinygs_poller.py.
+            import tinygs_poller
+            tinygs_poller.start_poller(interval=args.poll_interval)
+            log.info("Live capture: TinyGS v3 poller started (every %ds)", args.poll_interval)
         if args.mqtt:
             import tinygs_mqtt
             tinygs_mqtt.start_listener()

@@ -14,6 +14,10 @@ backups/
 # TLE cache
 .tle_cache/
 
+# aws_sync runtime state (cursor + packets that repeatedly failed to store)
+.aws_sync_state.json
+aws_sync_quarantine.jsonl
+
 # OS
 .DS_Store
 Thumbs.db

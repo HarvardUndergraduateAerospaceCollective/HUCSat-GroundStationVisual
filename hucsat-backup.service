@@ -1,0 +1,16 @@
+[Unit]
+Description=HUCSat mission DB backup (SD card + Google Drive)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=huac
+WorkingDirectory=/home/huac/Desktop/HUCSat-GroundStationVisual
+Environment=PYTHONUNBUFFERED=1
+# mission.env holds CUBESAT_SLACK_WEBHOOK for failure alerts. --no-sync:
+# hucsat-awssync.service already keeps the DB current.
+ExecStart=/bin/bash -c 'source mission.env && exec python3 db_backup.py --no-sync'
+# Don't let a hung rclone upload block every later run.
+TimeoutStartSec=30min
+Nice=10

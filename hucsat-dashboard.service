@@ -1,5 +1,5 @@
 [Unit]
-Description=HUCSat Mission Control dashboard + TinyGS v3 live poller
+Description=HUCSat Mission Control dashboard
 After=network-online.target
 Wants=network-online.target
 
@@ -8,12 +8,12 @@ Type=simple
 User=huac
 WorkingDirectory=/home/huac/Desktop/HUCSat-GroundStationVisual
 Environment=PYTHONUNBUFFERED=1
-# Source mission.env (holds `export TINYGS_*=...`) then run the dashboard with
-# live capture. exec so systemd tracks the python process directly.
-# 300s cadence: polite to the volunteer-run TinyGS network (90s + the 07-05
-# crash-loop got the Pi's IP tarpitted; packets arrive far apart anyway, and
-# a post-outage poll auto-backfills via pagination so nothing is missed).
-ExecStart=/bin/bash -c 'source mission.env && exec python3 web_server.py --live --poll-interval 300'
+# Source mission.env then run the dashboard with live updates. exec so systemd
+# tracks the python process directly.
+# --no-tinygs-poller: packets come only from the TinyGS webhook -> AWS ->
+# aws_sync.py (hucsat-awssync.service). Polling the TinyGS API directly got the
+# Pi's IP tarpitted and is not an approved data path.
+ExecStart=/bin/bash -c 'source mission.env && exec python3 web_server.py --live --no-tinygs-poller'
 Restart=always
 # 30s between restarts: even a persistent crash stays gentle on external APIs.
 RestartSec=30

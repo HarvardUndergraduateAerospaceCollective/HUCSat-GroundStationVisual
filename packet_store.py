@@ -13,6 +13,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,9 +30,22 @@ def _get_conn() -> sqlite3.Connection:
     """Return a thread-local SQLite connection (creates DB/tables on first call)."""
     conn = getattr(_local, "conn", None)
     if conn is None:
-        conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+        # Two processes write this DB (dashboard + aws_sync); wait up to 30 s
+        # for the write lock rather than Python's 5 s default.
+        conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False, timeout=30)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")   # safe for concurrent readers
+        # WAL is safe for concurrent readers. Switching a brand-new DB file to
+        # WAL needs an exclusive lock that ignores the busy timeout, so retry
+        # briefly when several connections open a fresh file at once.
+        for attempt in range(50):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError:
+                if attempt == 49:
+                    conn.close()
+                    raise
+                time.sleep(0.1)
         conn.execute("PRAGMA foreign_keys=ON")
         _init_tables(conn)
         _local.conn = conn
@@ -151,46 +165,70 @@ def store_packet_if_new(
     decoded: Optional[dict] = None,
     source: str = "unknown",
     received_at: Optional[str] = None,
+    telemetry: Optional[list[tuple[str, float, str]]] = None,
 ) -> tuple[int, bool]:
     """Insert a packet only if its frame has not been seen before.
 
     Returns ``(packet_id, was_new)`` — if a duplicate exists the
     existing row id is returned and *was_new* is ``False``.
     Packets without a *raw_frame* (hash is NULL) are always inserted.
+    *telemetry* (key, value, unit) rows are written in the same transaction
+    as the packet, so a crash can never leave a packet without them.
     """
     if received_at is None:
         received_at = datetime.now(timezone.utc).isoformat()
     decoded_json = json.dumps(decoded) if decoded else None
     frame_hash = hashlib.sha256(raw_frame).hexdigest() if raw_frame is not None else None
 
+    row_values = (received_at, satellite, norad_id, station,
+                  frequency_mhz, rssi, snr, int(crc_error),
+                  raw_frame, decoded_json, source, frame_hash)
+
     if frame_hash is None:
         # No raw frame — can't dedup, always insert
-        packet_id = store_packet(
-            satellite=satellite, norad_id=norad_id, station=station,
-            frequency_mhz=frequency_mhz, rssi=rssi, snr=snr,
-            crc_error=crc_error, raw_frame=raw_frame, decoded=decoded,
-            source=source, received_at=received_at,
-        )
+        with _cursor() as cur:
+            packet_id = _insert_packet_row(cur, row_values)
+            _insert_telemetry_rows(cur, packet_id, telemetry, received_at)
         return (packet_id, True)
 
-    # Single transaction: check + insert atomically
+    # Single transaction: check + insert atomically. Take the write lock up
+    # front — in a deferred transaction the SELECT holds a read snapshot, and if
+    # another writer commits before our INSERT, SQLite fails the upgrade with
+    # "database is locked" immediately, without honouring the busy timeout.
     with _cursor() as cur:
+        if not cur.connection.in_transaction:
+            cur.execute("BEGIN IMMEDIATE")
         cur.execute("SELECT id FROM packets WHERE frame_hash = ?", (frame_hash,))
         row = cur.fetchone()
         if row is not None:
             return (row[0], False)
 
-        cur.execute(
-            """INSERT INTO packets
-               (received_at, satellite, norad_id, station,
-                frequency_mhz, rssi, snr, crc_error,
-                raw_frame, decoded_json, source, frame_hash)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (received_at, satellite, norad_id, station,
-             frequency_mhz, rssi, snr, int(crc_error),
-             raw_frame, decoded_json, source, frame_hash),
+        packet_id = _insert_packet_row(cur, row_values)
+        _insert_telemetry_rows(cur, packet_id, telemetry, received_at)
+        return (packet_id, True)
+
+
+def _insert_packet_row(cur: sqlite3.Cursor, row_values: tuple) -> int:
+    cur.execute(
+        """INSERT INTO packets
+           (received_at, satellite, norad_id, station,
+            frequency_mhz, rssi, snr, crc_error,
+            raw_frame, decoded_json, source, frame_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        row_values,
+    )
+    return cur.lastrowid
+
+
+def _insert_telemetry_rows(cur: sqlite3.Cursor, packet_id: int,
+                           readings: Optional[list[tuple[str, float, str]]],
+                           timestamp: str) -> None:
+    if readings:
+        cur.executemany(
+            "INSERT INTO telemetry (packet_id, timestamp, key, value, unit) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(packet_id, timestamp, k, v, u) for k, v, u in readings],
         )
-        return (cur.lastrowid, True)
 
 
 def store_telemetry(packet_id: int, key: str, value: float,
