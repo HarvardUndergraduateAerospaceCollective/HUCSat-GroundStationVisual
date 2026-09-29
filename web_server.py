@@ -43,6 +43,10 @@ import packet_store
 # ──────────────────────────────────────────────
 MISSION_EPOCH_UTC = "2026-07-02T09:00:00+00:00"  # Thu Jul 2 2026, 05:00 EDT (Boston)
 
+# CARTO basemap tiles need an API key (since 2026-09); without one CARTO serves
+# "API KEY REQUIRED" placeholder tiles. Set it in mission.env, not in the repo.
+CARTO_BASEMAPS_KEY = os.environ.get("CARTO_BASEMAPS_KEY", "")
+
 log = logging.getLogger(__name__)
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["SECRET_KEY"] = "missioncontrol"
@@ -426,7 +430,8 @@ def _pass_watcher():
 @app.route("/")
 def index():
     return render_template("index.html", live=_state["live"],
-                           cache_bust=int(time.time()))
+                           cache_bust=int(time.time()),
+                           carto_key=CARTO_BASEMAPS_KEY)
 
 
 def _split_at_dateline(lon, lat):

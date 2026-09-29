@@ -46,10 +46,15 @@
     zoomControl: false,
   });
 
+  // CARTO requires an API key (CARTO_BASEMAPS_KEY in mission.env, passed in by
+  // the page) and OpenStreetMap + CARTO attribution.
+  const cartoKey = window.CARTO_BASEMAPS_KEY || "";
   L.tileLayer(
-    "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png",
+    "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png" +
+      (cartoKey ? "?key=" + encodeURIComponent(cartoKey) : ""),
     {
-      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
+        'contributors &copy; <a href="https://carto.com/">CARTO</a>',
       subdomains: "abcd",
       maxZoom: 19,
     }
