@@ -8,9 +8,11 @@ Type=oneshot
 User=huac
 WorkingDirectory=/home/huac/Desktop/HUCSat-GroundStationVisual
 Environment=PYTHONUNBUFFERED=1
-# mission.env holds CUBESAT_SLACK_WEBHOOK for failure alerts. --no-sync:
-# hucsat-awssync.service already keeps the DB current.
-ExecStart=/bin/bash -c 'source mission.env && exec python3 db_backup.py --no-sync'
+# The Slack webhook for failure alerts lives in /etc/environment. Don't source
+# mission.env here: it sets CUBESAT_SLACK_WEBHOOK to '' and would disable them.
+EnvironmentFile=-/etc/environment
+# --no-sync: hucsat-awssync.service already keeps the DB current.
+ExecStart=/usr/bin/python3 db_backup.py --no-sync
 # Don't let a hung rclone upload block every later run.
 TimeoutStartSec=30min
 Nice=10

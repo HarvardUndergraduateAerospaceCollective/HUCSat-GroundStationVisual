@@ -53,13 +53,17 @@ for f in .aws_sync_state.json aws_sync_quarantine.jsonl \
     fi
 done
 
-# The timer replaces the old "every 3 h" cron line from DEPLOYMENT_CHECKLIST.
-for who in huac root; do
-    if sudo crontab -u "$who" -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q 'db_backup\.py'; then
-        echo "WARNING: $who's crontab still runs db_backup.py -- remove that line" \
-             "(sudo crontab -u $who -e) or backups will run twice." >&2
-    fi
-done
+# The timer replaces cron-based backups: drop huac's db_backup.py cron lines
+# (including the "hucsat-backup-cron" stopgap) so backups don't run twice.
+cron_now=$(crontab -l 2>/dev/null || true)
+if grep -q 'db_backup\.py\|hucsat-backup-cron' <<<"$cron_now"; then
+    echo "Removing db_backup.py from huac's crontab (hucsat-backup.timer replaces it)"
+    { grep -v 'db_backup\.py\|hucsat-backup-cron' <<<"$cron_now" || true; } | crontab -
+fi
+if sudo crontab -u root -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q 'db_backup\.py'; then
+    echo "WARNING: root's crontab still runs db_backup.py -- remove that line" \
+         "(sudo crontab -u root -e) or backups will run twice." >&2
+fi
 
 sudo systemctl enable hucsat-dashboard hucsat-awssync
 sudo systemctl enable --now hucsat-backup.timer
