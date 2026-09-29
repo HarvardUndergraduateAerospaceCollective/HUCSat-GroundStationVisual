@@ -5,6 +5,7 @@ Data source: packet_store telemetry table, key "FSM_magn_v_0" (populated by tiny
 """
 
 import numpy as np
+import mission_time
 import packet_store
 
 TITLE          = "MAGNETOMETER"
@@ -16,7 +17,7 @@ TELEMETRY_KEY  = "FSM_magn_v_0"
 
 
 def compute():
-    """Return (time_minutes, magnetometer_uT) arrays from stored telemetry.
+    """Return (MET minutes, magnetometer_uT) arrays from stored telemetry.
 
     Queries the telemetry table for FSM_magn_v_0.  Returns empty arrays
     when no readings exist yet.
@@ -27,11 +28,8 @@ def compute():
 
     values = np.array([r["value"] for r in rows], dtype=float)
 
-    from datetime import datetime
     try:
-        times = [datetime.fromisoformat(r["timestamp"]) for r in rows]
-        t0 = times[0]
-        t_min = np.array([(t - t0).total_seconds() / 60.0 for t in times])
+        t_min = np.array([mission_time.met_minutes(r["timestamp"]) for r in rows])
     except Exception:
         t_min = np.arange(len(values), dtype=float)
 

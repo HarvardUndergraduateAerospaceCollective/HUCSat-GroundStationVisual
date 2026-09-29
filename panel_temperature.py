@@ -11,10 +11,9 @@ Data source: packet_store telemetry table, keys FSM_av_0 / FSM_av_1 / FSM_av_2
 missioncontrol.py / stress_bench.py. The dashboard uses ``compute_series()``.
 """
 
-from datetime import datetime
-
 import numpy as np
 
+import mission_time
 import packet_store
 
 TITLE          = "GYROSCOPE"
@@ -36,7 +35,7 @@ GYRO_AXES = [
 
 
 def compute():
-    """Return (time_minutes, values) for the X axis (FSM_av_0). Legacy single-series.
+    """Return (MET minutes, values) for the X axis (FSM_av_0). Legacy single-series.
 
     Kept so missioncontrol.py / stress_bench.py keep working; the web dashboard
     uses compute_series() instead.
@@ -47,9 +46,7 @@ def compute():
 
     values = np.array([r["value"] for r in rows], dtype=float)
     try:
-        times = [datetime.fromisoformat(r["timestamp"]) for r in rows]
-        t0 = times[0]
-        t_min = np.array([(t - t0).total_seconds() / 60.0 for t in times])
+        t_min = np.array([mission_time.met_minutes(r["timestamp"]) for r in rows])
     except Exception:
         t_min = np.arange(len(values), dtype=float)
 
@@ -61,7 +58,7 @@ def compute_series():
 
     Shape::
 
-        {"x": [minutes, ...],
+        {"x": [MET minutes, ...],
          "series": [{"label": "X", "color": "#..", "y": [..]}, ... 4 entries]}
 
     The three axes are stored together in each beacon frame, so they share
@@ -88,9 +85,7 @@ def compute_series():
         return empty
 
     try:
-        t0 = datetime.fromisoformat(timestamps[0])
-        x = [(datetime.fromisoformat(ts) - t0).total_seconds() / 60.0
-             for ts in timestamps]
+        x = [mission_time.met_minutes(ts) for ts in timestamps]
     except Exception:
         x = [float(i) for i in range(len(timestamps))]
 

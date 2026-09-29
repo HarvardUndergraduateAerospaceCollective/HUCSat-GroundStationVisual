@@ -191,6 +191,13 @@
   // Chart.js panels
   // ──────────────────────────────────────────
 
+  // Time-series x labels arrive in hours (MET for telemetry panels); show one
+  // decimal on the axis. Tooltips still show the full value.
+  function hourTick(value) {
+    const v = Number(this.getLabelForValue(value));
+    return isFinite(v) ? v.toFixed(1) : value;
+  }
+
   const charts = [];
   try {
     for (let i = 0; i < 5; i++) {
@@ -218,8 +225,8 @@
           scales: {
             x: {
               display: true,
-              title: { display: true, text: "Time (min)", color: AXIS_LABEL_COLOR, font: { size: 12, ...AXIS_FONT } },
-              ticks: { color: AXIS_TICK_COLOR, font: { size: 11, ...AXIS_FONT }, maxTicksLimit: 5 },
+              title: { display: true, text: "Time (h)", color: AXIS_LABEL_COLOR, font: { size: 12, ...AXIS_FONT } },
+              ticks: { color: AXIS_TICK_COLOR, font: { size: 11, ...AXIS_FONT }, maxTicksLimit: 5, callback: hourTick },
               grid: { color: GRID_COLOR },
             },
             y: {
@@ -254,7 +261,7 @@
         animation: false,
         plugins: { legend: { display: false } },
         scales: {
-          x: { display: true, ticks: { color: AXIS_TICK_COLOR, font: { size: 8, ...AXIS_FONT }, maxTicksLimit: 3 }, grid: { color: GRID_COLOR } },
+          x: { display: true, ticks: { color: AXIS_TICK_COLOR, font: { size: 8, ...AXIS_FONT }, maxTicksLimit: 3, callback: hourTick }, grid: { color: GRID_COLOR } },
           y: { display: true, ticks: { color: AXIS_TICK_COLOR, font: { size: 8, ...AXIS_FONT }, maxTicksLimit: 3 }, grid: { color: GRID_COLOR } },
         },
       },
@@ -555,8 +562,10 @@
         const chart = charts[i];
         if (!chart) return;
         const awaiting = document.getElementById("awaiting-" + i);
+        chart.options.scales.x.title.text = p.xlabel || "Time (h)";
         if (p.x.length === 0) {
           if (awaiting) awaiting.classList.remove("hidden");
+          chart.update();
           return;
         }
         if (awaiting) awaiting.classList.add("hidden");

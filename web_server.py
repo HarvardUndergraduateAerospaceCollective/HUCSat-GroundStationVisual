@@ -27,6 +27,7 @@ import numpy as np
 from flask import Flask, jsonify, render_template, request
 from flask_socketio import SocketIO
 
+import mission_time
 import visualizer
 import panel_altitude
 import panel_signal
@@ -37,11 +38,10 @@ import panel_best_dir
 import packet_store
 
 # ──────────────────────────────────────────────
-# Mission epoch — set this to the deployment timestamp once known.
-# Format: ISO-8601 with timezone, e.g. "2026-06-15T14:32:00+00:00"
-# Leave as None until the satellite separates; MET will show --:--:-- until then.
+# Mission epoch (deployment) — defined in mission_time.py, which the telemetry
+# charts' MET axis also uses. None would make MET show --:--:--.
 # ──────────────────────────────────────────────
-MISSION_EPOCH_UTC = "2026-07-02T09:00:00+00:00"  # Thu Jul 2 2026, 05:00 EDT (Boston)
+MISSION_EPOCH_UTC = mission_time.MISSION_EPOCH_UTC
 
 # CARTO basemap tiles need an API key (since 2026-09); without one CARTO serves
 # "API KEY REQUIRED" placeholder tiles. Set it in mission.env, not in the repo.
@@ -488,6 +488,13 @@ def api_track():
                    future_segments=future_segments)
 
 
+def _x_label(mod):
+    """Time-series panels are sent in hours. Telemetry panels are timestamped,
+    so their x is mission elapsed time; the altitude panel is a predicted curve
+    over the recent orbits, not tied to MET."""
+    return "MET (h)" if getattr(mod, "SOURCE", "orbital") == "telemetry" else "Time (h)"
+
+
 def _build_multi_panel(mod, window_min):
     """Serialize a multi-series panel (shared x, N y-series) with the same
     windowing + downsampling used for single-series panels. Read-only."""
@@ -504,8 +511,9 @@ def _build_multi_panel(mod, window_min):
     return {
         "title": mod.TITLE,
         "ylabel": mod.Y_LABEL,
+        "xlabel": _x_label(mod),
         "multi": True,
-        "x": [round(float(v), 3) for v in x[::step]],
+        "x": [round(float(v) / 60.0, 4) for v in x[::step]],   # minutes -> hours
         "series": [{"label": s["label"], "color": s["color"],
                     "y": [round(float(v), 3) for v in s["y"][::step]]}
                    for s in series],
@@ -545,6 +553,7 @@ def api_panels():
                 "title": mod.TITLE,
                 "color": mod.COLOR,
                 "ylabel": mod.Y_LABEL,
+                "xlabel": _x_label(mod),
                 "x": [],
                 "y": [],
             })
@@ -555,7 +564,8 @@ def api_panels():
                 "title": mod.TITLE,
                 "color": mod.COLOR,
                 "ylabel": mod.Y_LABEL,
-                "x": [round(float(v), 3) for v in x[::step]],
+                "xlabel": _x_label(mod),
+                "x": [round(float(v) / 60.0, 4) for v in x[::step]],   # minutes -> hours
                 "y": [round(float(v), 3) for v in y[::step]],
             })
 

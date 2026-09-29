@@ -5,6 +5,7 @@ Data source: packet_store (packets.rssi column, populated by tinygs_mqtt).
 """
 
 import numpy as np
+import mission_time
 import packet_store
 
 TITLE   = "SIGNAL"
@@ -15,7 +16,7 @@ SOURCE  = "telemetry"
 
 
 def compute():
-    """Return (time_minutes, rssi_dbm) arrays from stored packets.
+    """Return (MET minutes, rssi_dbm) arrays from stored packets.
 
     Reads RSSI values from the packets table.  Returns empty arrays
     when no packets have been received yet.
@@ -31,13 +32,10 @@ def compute():
     if len(values) == 0:
         return np.array([]), np.array([])
 
-    # X-axis: sequential sample index (minutes unavailable without timestamps parse)
-    from datetime import datetime
+    # X-axis: minutes of mission elapsed time (sample index if unparseable)
     try:
-        times = [datetime.fromisoformat(r["received_at"]) for r in rows
-                 if r.get("rssi") is not None]
-        t0 = times[0]
-        t_min = np.array([(t - t0).total_seconds() / 60.0 for t in times])
+        t_min = np.array([mission_time.met_minutes(r["received_at"]) for r in rows
+                          if r.get("rssi") is not None])
     except Exception:
         t_min = np.arange(len(values), dtype=float)
 
