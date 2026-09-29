@@ -156,9 +156,17 @@ KEY_MAP: dict[int, str] = {
 }
 
 # The 8-bit hash space has one collision: "name" and "FSM_best_dir" both hash
-# to 0xA2. They are disambiguated by value type — "name" is a string, while
-# "FSM_best_dir" is numeric — so a non-string field with hash 0xA2 is best_dir.
+# to 0xA2. The firmware always sends "name" (a string) first; best_dir comes
+# later, as -1 (numeric) or, in the orient state, as a string label such as
+# "+X Axis". So a non-string 0xA2 field, or a second string one, is best_dir.
 _COLLISION_NUMERIC: dict[int, str] = {0xA2: "FSM_best_dir"}
+
+# Firmware best-direction labels (OBC_v5d state_orient.py) -> the face index the
+# dashboard's best-direction panel and the telemetry table use.
+_BEST_DIR_INDEX: dict[str, int] = {
+    "+Y Axis": 0, "-X Axis": 1, "-Y Axis": 2, "+X Axis": 3,
+    "None Better That Others": -1,
+}
 
 
 def _circuitpython_hash(s: str) -> int:
@@ -207,9 +215,11 @@ def _decode_tlv_stream(data: bytes, key_map: dict[int, str]) -> dict[str, object
         key_hash, type_id = struct.unpack(">IB", data[offset:offset + 5])
         offset += 5
 
-        # Resolve the field name. Non-string fields whose hash collides go to
-        # the numeric member of the collision (e.g. 0xA2 -> FSM_best_dir, not name).
-        if type_id != _TYPE_STRING and key_hash in _COLLISION_NUMERIC:
+        # Resolve the field name. For a colliding hash, the first string is the
+        # primary key ("name"); a non-string, or a later string, is the other
+        # member (e.g. 0xA2 -> FSM_best_dir).
+        if key_hash in _COLLISION_NUMERIC and (
+                type_id != _TYPE_STRING or key_map.get(key_hash) in result):
             key_name = _COLLISION_NUMERIC[key_hash]
         else:
             key_name = key_map.get(key_hash, f"field_{key_hash:08x}")
@@ -302,6 +312,16 @@ _RAD_TO_DEG = 180.0 / math.pi
 _ANGULAR_VELOCITY_FIELDS = ("FSM_av_0", "FSM_av_1", "FSM_av_2")
 
 
+def _normalize_best_dir(telemetry: dict) -> None:
+    """Map a best-direction label to its face index, keeping the label."""
+    val = telemetry.get("FSM_best_dir")
+    if isinstance(val, str):
+        telemetry["FSM_best_dir_label"] = val
+        index = _BEST_DIR_INDEX.get(val.strip())
+        if index is not None:
+            telemetry["FSM_best_dir"] = index
+
+
 def _normalize_units(telemetry: dict) -> None:
     """Convert decoded fields in-place to the units declared in FIELD_META."""
     for key in _ANGULAR_VELOCITY_FIELDS:
@@ -354,6 +374,7 @@ def decode_beacon(
 
     telemetry = _decode_tlv_stream(payload, key_map)
     _normalize_units(telemetry)
+    _normalize_best_dir(telemetry)
 
     return {"header": header_info, "telemetry": telemetry}
 
@@ -371,6 +392,7 @@ FIELD_META: dict[str, dict[str, str]] = {
     "FSM_pan_light":   {"unit": "",    "label": "Panel Light Intensity"},
     "FSM_payl_light":  {"unit": "",    "label": "Payload Light Intensity"},
     "FSM_best_dir":    {"unit": "",    "label": "Best Direction"},
+    "FSM_best_dir_label": {"unit": "", "label": "Best Direction (label)"},
     "FSM_magn_v_0":    {"unit": "µT",  "label": "Magnetometer X"},
     "FSM_magn_v_1":    {"unit": "µT",  "label": "Magnetometer Y"},
     "FSM_magn_v_2":    {"unit": "µT",  "label": "Magnetometer Z"},
