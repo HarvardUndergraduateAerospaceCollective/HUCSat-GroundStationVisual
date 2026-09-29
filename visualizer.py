@@ -307,6 +307,19 @@ def orbital_altitude(
     return t, alt_km
 
 
+def altitude_window(t_start_unix: float, t_end_unix: float, n_points: int = 500):
+    """Altitude over an absolute UTC window via SGP4.
+
+    Returns (t_unix, alt_km), or None when SGP4 isn't loaded (no TLE yet).
+    """
+    if _sgp4_sat is None or _sgp4_period <= 0:
+        return None
+    n_orbits = (t_end_unix - t_start_unix) / _sgp4_period
+    start_orbit = (t_start_unix - _sgp4_epoch_unix) / _sgp4_period
+    _, _, alt_km, t_rel = _sgp4_propagate(n_orbits, n_points, start_orbit)
+    return t_start_unix + t_rel, alt_km
+
+
 # ──────────────────────────────────────────────
 # TLE fetching
 # ──────────────────────────────────────────────

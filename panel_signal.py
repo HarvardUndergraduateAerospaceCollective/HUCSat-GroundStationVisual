@@ -1,14 +1,18 @@
 """
-Panel: Signal Strength
-Displays ground-station RSSI from received TinyGS packets over time.
-Data source: packet_store (packets.rssi column, populated by tinygs_mqtt).
+Panel: Onboard RSSI
+The satellite's own RSSI reading, carried in every frame's header: the flight
+firmware writes abs(radio.get_rssi()) -- the RSSI of the last LoRa packet the
+*satellite* received. It is not ground-station signal strength (the TinyGS
+webhook doesn't include that).
+Data source: packet_store raw frames, decoded with beacon_decoder.
 """
 
 import numpy as np
+import beacon_decoder
 import mission_time
 import packet_store
 
-TITLE   = "SIGNAL"
+TITLE   = "ONBOARD RSSI"
 Y_LABEL = "RSSI (dBm)"
 X_LABEL = "Time (min)"
 COLOR   = "#33ff00"
@@ -16,27 +20,20 @@ SOURCE  = "telemetry"
 
 
 def compute():
-    """Return (MET minutes, rssi_dbm) arrays from stored packets.
+    """Return (MET minutes, onboard_rssi_dbm) arrays, oldest first.
 
-    Reads RSSI values from the packets table.  Returns empty arrays
-    when no packets have been received yet.
+    Decoded from each stored frame's header; frames without a HUCSat header
+    are skipped. Returns empty arrays when there is nothing to show.
     """
-    rows = packet_store.recent_packets(n=500)
-    if not rows:
-        return np.array([]), np.array([])
-
-    # Build arrays — oldest first
-    rows = list(reversed(rows))
-    values = np.array([r["rssi"] for r in rows if r.get("rssi") is not None],
-                      dtype=float)
-    if len(values) == 0:
-        return np.array([]), np.array([])
-
-    # X-axis: minutes of mission elapsed time (sample index if unparseable)
-    try:
-        t_min = np.array([mission_time.met_minutes(r["received_at"]) for r in rows
-                          if r.get("rssi") is not None])
-    except Exception:
-        t_min = np.arange(len(values), dtype=float)
-
-    return t_min, values
+    t_min, values = [], []
+    for r in reversed(packet_store.recent_packets(n=3000)):
+        raw = r.get("raw_frame")
+        rssi = beacon_decoder.onboard_rssi_dbm(bytes(raw)) if raw is not None else None
+        if rssi is None:
+            continue
+        try:
+            t_min.append(mission_time.met_minutes(r["received_at"]))
+        except (TypeError, ValueError):
+            continue
+        values.append(rssi)
+    return np.array(t_min, dtype=float), np.array(values, dtype=float)

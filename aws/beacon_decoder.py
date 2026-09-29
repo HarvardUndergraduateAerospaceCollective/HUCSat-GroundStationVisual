@@ -263,6 +263,19 @@ def strip_hucsat_header(raw: bytes) -> tuple[dict, bytes]:
     return header, raw[HUCSAT_HEADER_SIZE:]
 
 
+def onboard_rssi_dbm(raw: bytes) -> Optional[int]:
+    """The satellite's own RSSI reading (dBm) carried in the frame header.
+
+    The flight firmware's packet manager writes abs(radio.get_rssi()) -- the
+    RSSI of the last LoRa packet the *satellite* received -- into header byte 9
+    (the ``msg_byte`` above). It is not how strongly a ground station heard
+    this frame. None if the frame has no HUCSat header.
+    """
+    if not _looks_like_hucsat_header(raw):
+        return None
+    return -raw[9]
+
+
 def strip_packet_header(raw: bytes) -> tuple[dict, bytes]:
     """Strip 6-byte PacketManager header and return (header_info, payload).
 

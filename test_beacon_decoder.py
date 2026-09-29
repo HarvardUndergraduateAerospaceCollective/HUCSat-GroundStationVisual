@@ -59,5 +59,16 @@ class TestNameBestDirCollision(unittest.TestCase):
         self.assertAlmostEqual(t["FSM_av_0"], 2.0125, places=3)    # raw 0.0351 rad/s
 
 
+
+class TestOnboardRssi(unittest.TestCase):
+    def test_header_rssi_byte(self):
+        # Header byte 9 holds abs(RSSI); TinyGS parses the same byte as rssiDbm.
+        self.assertEqual(beacon_decoder.onboard_rssi_dbm(ORIENT_FRAME), -77)
+        self.assertEqual(beacon_decoder.onboard_rssi_dbm(DETUMBLE_FRAME), -69)
+
+    def test_no_header(self):
+        self.assertIsNone(beacon_decoder.onboard_rssi_dbm(b"WP2XZJ"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

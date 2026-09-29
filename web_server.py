@@ -146,7 +146,7 @@ TRACK_WINDOW_ORBITS = 1.1
 # Tune these once you know what looks right for each panel.
 PANEL_WINDOWS = {
     "panel_altitude":      240,    # last 4 hours
-    "panel_signal":        240,    # last 4 hours
+    "panel_signal":        2880,   # onboard RSSI — last 2 days, like the other telemetry
     "panel_temperature":   2880,   # gyroscope — last 2 days
     "panel_power":         2880,   # last 2 days
     "panel_magnetometer":  2880,   # last 2 days
@@ -489,10 +489,9 @@ def api_track():
 
 
 def _x_label(mod):
-    """Time-series panels are sent in hours. Telemetry panels are timestamped,
-    so their x is mission elapsed time; the altitude panel is a predicted curve
-    over the recent orbits, not tied to MET."""
-    return "MET (h)" if getattr(mod, "SOURCE", "orbital") == "telemetry" else "Time (h)"
+    """Every time-series panel (telemetry and the live altitude) is sent in
+    hours of mission elapsed time."""
+    return "MET (h)"
 
 
 def _build_multi_panel(mod, window_min):
