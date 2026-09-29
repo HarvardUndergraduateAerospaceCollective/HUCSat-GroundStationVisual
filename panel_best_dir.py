@@ -5,6 +5,9 @@ Data source: packet_store telemetry table, key "FSM_best_dir".
 
 Unlike other panels, this returns *distribution* data (counts per face)
 rather than a time series, since the value is a discrete direction index.
+Only real faces are charted; readings with no direction (-1, e.g. every
+detumble-state beacon) are left out of the chart but counted, so the panel
+can show what share of packets carry a real direction.
 
 Direction mapping (from OBC state_orient.py):
     0 → +Y    1 → −X    2 → −Y    3 → +X    −1 → N/A
@@ -39,31 +42,38 @@ def compute():
     """Return distribution dict for the doughnut chart.
 
     Returns dict with keys:
-        labels  – face direction labels  ["+Y", "−X", "−Y", "+X", "N/A"]
+        labels  – face direction labels  ["+Y", "−X", "−Y", "+X"]
         counts  – number of readings per direction
         colors  – per-slice color
-        latest  – most recent direction index (int)
+        latest  – most recent real direction index (int, -1 if none yet)
         latest_label – human-readable label for latest
+        with_direction – readings with a real direction
+        total          – all best-direction readings (incl. no direction)
+        pct_with_direction – with_direction / total, as a percentage
     """
     rows = packet_store.telemetry_series(TELEMETRY_KEY)
 
-    # Count occurrences per direction
-    counts = {k: 0 for k in FACE_LABELS}
+    faces = [0, 1, 2, 3]
+    counts = {k: 0 for k in faces}
+    no_direction = 0
     latest = -1
     for r in rows:
         val = int(round(r["value"]))
         if val in counts:
             counts[val] += 1
+            latest = val
         else:
-            counts[-1] += 1
-        latest = val
+            no_direction += 1
 
-    # Build ordered lists (0, 1, 2, 3, -1)
-    order = [0, 1, 2, 3, -1]
+    with_direction = sum(counts.values())
+    total = with_direction + no_direction
     return {
-        "labels":       [FACE_LABELS[k] for k in order],
-        "counts":       [counts[k] for k in order],
-        "colors":       [FACE_COLORS[k] for k in order],
+        "labels":       [FACE_LABELS[k] for k in faces],
+        "counts":       [counts[k] for k in faces],
+        "colors":       [FACE_COLORS[k] for k in faces],
         "latest":       latest,
-        "latest_label": FACE_LABELS.get(latest, "?"),
+        "latest_label": FACE_LABELS[latest] if latest in counts else "-",
+        "with_direction": with_direction,
+        "total":          total,
+        "pct_with_direction": round(100 * with_direction / total, 1) if total else 0.0,
     }

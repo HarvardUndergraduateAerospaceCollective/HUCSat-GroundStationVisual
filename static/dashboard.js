@@ -824,10 +824,10 @@
     bestDirChart = new Chart(bestDirCtx.getContext("2d"), {
       type: "doughnut",
       data: {
-        labels: ["+Y", "−X", "−Y", "+X", "N/A"],
+        labels: ["+Y", "−X", "−Y", "+X"],
         datasets: [{
-          data: [0, 0, 0, 0, 0],
-          backgroundColor: ["#33ff00", "#ffb000", "#ff6600", "#00ff88", "#1a1a1a"],
+          data: [0, 0, 0, 0],
+          backgroundColor: ["#33ff00", "#ffb000", "#ff6600", "#00ff88"],
           borderColor: "#0a0c0a",
           borderWidth: 2,
         }],
@@ -869,6 +869,13 @@
     try {
       const data = await fetchJSON("/api/best_dir");
       const awaiting = document.getElementById("awaiting-best-dir");
+      const coverage = document.getElementById("best-dir-coverage");
+      if (coverage) {
+        coverage.textContent = data.total > 0
+          ? "REAL DIR: " + data.with_direction + "/" + data.total +
+            " PKTS (" + data.pct_with_direction + "%)"
+          : "";
+      }
       const total = data.counts.reduce(function (a, b) { return a + b; }, 0);
       if (total === 0) {
         if (awaiting) awaiting.classList.remove("hidden");

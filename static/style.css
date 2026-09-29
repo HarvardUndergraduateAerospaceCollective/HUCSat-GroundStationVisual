@@ -243,6 +243,17 @@ body::after {
 
 /* ── Best direction center label ── */
 
+.best-dir-coverage {
+  flex-shrink: 0;
+  text-align: center;
+  font-size: clamp(9px, 0.75vw, 14px);
+  color: #7a9a5a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-top: 2px;
+}
+
 .best-dir-label {
   position: absolute;
   top: 50%;
