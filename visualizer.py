@@ -320,6 +320,36 @@ def altitude_window(t_start_unix: float, t_end_unix: float, n_points: int = 500)
     return t_start_unix + t_rel, alt_km
 
 
+def _sun_unit(t_unix: np.ndarray) -> np.ndarray:
+    """Unit vector to the Sun, equator of date (Astronomical Almanac low-precision, ~0.01°)."""
+    d = (t_unix - 946728000.0) / 86400.0           # days since J2000.0 (2000-01-01 12:00 UTC)
+    L = np.radians((280.460 + 0.9856474 * d) % 360.0)
+    g = np.radians((357.528 + 0.9856003 * d) % 360.0)
+    lam = L + np.radians(1.915) * np.sin(g) + np.radians(0.020) * np.sin(2 * g)
+    eps = np.radians(23.439 - 4e-7 * d)
+    return np.stack([np.cos(lam), np.cos(eps) * np.sin(lam), np.sin(eps) * np.sin(lam)], axis=-1)
+
+
+def in_sunlight(t_unix):
+    """Whether the satellite is outside Earth's shadow at each UTC time, via SGP4.
+
+    Cylindrical shadow model; it agreed with TinyGS's own sunLit flag on 990 of
+    993 packets (2026-09-29..10-01). Returns a bool array, or None when SGP4
+    isn't loaded. Times SGP4 can't propagate count as not sunlit.
+    """
+    if _sgp4_sat is None:
+        return None
+    t = np.atleast_1d(np.asarray(t_unix, dtype=float))
+    jd = t / 86400.0 + 2440587.5
+    jd_whole = np.floor(jd)
+    err, r, _ = _sgp4_sat.sgp4_array(jd_whole, jd - jd_whole)
+    s = _sun_unit(t)
+    along = np.einsum("ij,ij->i", r, s)                 # km toward the Sun
+    off_axis_sq = np.einsum("ij,ij->i", r, r) - along ** 2
+    shadow = (along < 0) & (off_axis_sq < 6378.137 ** 2)
+    return ~shadow & (err == 0)
+
+
 # ──────────────────────────────────────────────
 # TLE fetching
 # ──────────────────────────────────────────────

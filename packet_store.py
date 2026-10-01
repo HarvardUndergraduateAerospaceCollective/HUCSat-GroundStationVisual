@@ -342,6 +342,29 @@ def telemetry_series(key: str, since: Optional[str] = None,
         return [dict(row) for row in cur.fetchall()]
 
 
+def decoded_fields(key: str, *extra: str, after_id: int = 0) -> list[dict]:
+    """Return [{id, received_at, key, *extra}, ...] for packets with
+    ``id > after_id`` whose decoded JSON has ``key``, in id order.
+
+    For fields the numeric telemetry table can't hold (e.g. FSM_pan_light,
+    which is a string). Missing extra fields come back as None. Pass the
+    largest id seen so far as ``after_id`` to read only new packets.
+    """
+    fields = (key,) + extra
+    if not all(f.replace("_", "").isalnum() for f in fields):
+        raise ValueError(f"not a plain field name: {fields}")
+    cols = ", ".join(f"json_extract(decoded_json, '$.{f}') AS {f}" for f in fields)
+    with _cursor() as cur:
+        cur.execute(
+            f"SELECT id, received_at, {cols} FROM packets "
+            f"WHERE id > ? AND json_valid(decoded_json) "
+            f"AND json_extract(decoded_json, '$.{key}') IS NOT NULL "
+            f"ORDER BY id",
+            (after_id,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def fsm_state_history(n: int = 500) -> list[dict]:
     """Return FSM state timeline from decoded packet JSON.
 
