@@ -191,11 +191,11 @@
   // Chart.js panels
   // ──────────────────────────────────────────
 
-  // Time-series x labels arrive in hours (MET for telemetry panels); show one
-  // decimal on the axis. Tooltips still show the full value.
+  // Time-series x labels arrive in hours (MET for telemetry panels); ticks are
+  // hours apart, so show whole hours on the axis. Tooltips still show the full value.
   function hourTick(value) {
     const v = Number(this.getLabelForValue(value));
-    return isFinite(v) ? v.toFixed(1) : value;
+    return isFinite(v) ? Math.round(v).toString() : value;
   }
 
   const charts = [];
