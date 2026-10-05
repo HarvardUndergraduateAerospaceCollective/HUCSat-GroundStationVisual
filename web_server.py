@@ -571,23 +571,10 @@ def api_panels():
     return jsonify(panels=panels)
 
 
-# HUCSat firmware quirk: the beacon "uptime" field is anchored to the OBC
-# clock's epoch instead of boot, so it arrives as ~9.47e8 s. Subtracting the
-# boot anchor recovers real seconds since boot (calibrated 2026-07-08 against
-# a known-good uptime of 518144 s). Plausible values pass through untouched
-# in case a firmware update fixes this upstream.
-HUCSAT_UPTIME_BOOT_ANCHOR = 946689024
-_UPTIME_PLAUSIBLE_MAX = 315_360_000  # 10 years
-
-
-def _fix_uptime(value):
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return value
-    if v > _UPTIME_PLAUSIBLE_MAX:
-        v -= HUCSAT_UPTIME_BOOT_ANCHOR
-    return int(v) if v >= 0 else value
+def _fc_uptime(entry):
+    """Flight-computer uptime in seconds for a decoded FSM entry, or "—"."""
+    secs = mission_time.fc_uptime_seconds(entry.get("rtc"), entry.get("uptime"))
+    return "—" if secs is None else secs
 
 
 @app.route("/api/status")
@@ -629,7 +616,7 @@ def api_status():
     fsm = packet_store.latest_fsm_state()
     fsm_state = fsm["fsm_state"] if fsm else "—"
     fsm_depl = fsm["fsm_depl"] if fsm else "—"
-    fsm_uptime = _fix_uptime(fsm["uptime"]) if fsm else "—"
+    fsm_uptime = _fc_uptime(fsm) if fsm else "—"
 
     # Average orbital speed: v = 2*pi*a / T (equals sqrt(mu/a) since the period
     # is Kepler-derived from a). ~7.7 km/s in LEO. Reported in km/s and mph.
@@ -663,7 +650,7 @@ def api_fsm():
     """Return FSM state history for the timeline panel."""
     history = packet_store.fsm_state_history(n=200)
     for entry in history:
-        entry["uptime"] = _fix_uptime(entry.get("uptime"))
+        entry["uptime"] = _fc_uptime(entry)
     return jsonify(history=history)
 
 

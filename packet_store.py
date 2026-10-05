@@ -395,6 +395,7 @@ def fsm_state_history(n: int = 500) -> list[dict]:
             "fsm_depl": decoded.get("FSM_depl", ""),
             "fsm_pay_set": decoded.get("FSM_pay_set", ""),
             "uptime": decoded.get("uptime", ""),
+            "rtc": decoded.get("time", ""),
         })
     return results
 
@@ -421,6 +422,7 @@ def latest_fsm_state() -> Optional[dict]:
                     "fsm_payl_light": decoded.get("FSM_payl_light", ""),
                     "fsm_best_dir": decoded.get("FSM_best_dir", ""),
                     "uptime": decoded.get("uptime", ""),
+                    "rtc": decoded.get("time", ""),
                 }
     return None
 
